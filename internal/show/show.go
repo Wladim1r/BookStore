@@ -162,7 +162,7 @@ func GetString() string {
 		str = strings.TrimSpace(str)
 
 		if len(str) == 0 {
-			fmt.Fprint(os.Stderr, "Поле не может оставаться пустым\nПопробйте еще раз: ")
+			fmt.Fprint(os.Stderr, "Поле не может оставаться пустым\nПопробуйте еще раз: ")
 			continue
 		}
 
