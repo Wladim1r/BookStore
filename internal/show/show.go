@@ -2,14 +2,13 @@ package show
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"io"
 	"library/internal/book"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const NewLine = '\n'
@@ -22,55 +21,31 @@ func localShow(id int, name, autor string, year, price int) {
 	fmt.Fprintf(os.Stdout, "Цена (в рублях): %d\n\n", price)
 }
 
-func ShowAll() {
-	var sliceBooks book.BookStore
+func ShowAll(fileName string) {
+	var bookStore book.BookStore
+	book.ReadJsonFile(fileName, &bookStore)
+	books := bookStore.Books
 
-	file, err := os.OpenFile("cmd/app/allbooks.json", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-		return
-	}
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&sliceBooks)
-	if err != nil && err != io.EOF {
-		fmt.Fprintln(os.Stderr, "Книг нет")
-		return
-	}
-
-	if len(sliceBooks.Books) == 0 {
-		fmt.Fprintln(os.Stdout, "Книг нет")
-		fmt.Fprintln(os.Stdout)
-		return
-	}
-
-	sort.Slice(sliceBooks.Books, func(i, j int) bool {
-		return sliceBooks.Books[i].Id < sliceBooks.Books[j].Id
+	sort.Slice(books, func(i, j int) bool {
+		return books[i].Id < books[j].Id
 	})
 
-	fmt.Fprintf(os.Stdout, "\nСПИСОК ВСЕХ КНИГ ИЗ СПИСКА\n")
-	for _, val := range sliceBooks.Books {
-		localShow(val.Id, val.Name, val.Author, val.Year, val.Price)
+	if len(books) == 0 {
+		fmt.Fprintf(os.Stdout, "\nКниг нет\n\n")
+	} else {
+		fmt.Fprintf(os.Stdout, "\nСПИСОК ВСЕХ КНИГ ИЗ СПИСКА\n")
+		for _, val := range books {
+			localShow(val.Id, val.Name, val.Author, val.Year, val.Price)
+		}
 	}
 }
 
-func ShowOne(title string) {
-	var sliceBooks book.BookStore
+func ShowOne(fileName string, title string) {
+	var bookStore book.BookStore
+	book.ReadJsonFile(fileName, &bookStore)
+	books := bookStore.Books
 
-	file, err := os.OpenFile("cmd/app/allbooks.json", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-		return
-	}
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&sliceBooks)
-	if err != nil && err != io.EOF {
-		fmt.Fprintln(os.Stderr, "Книг нет")
-		return
-	}
-
-	for _, val := range sliceBooks.Books {
+	for _, val := range books {
 		if val.Name == title {
 			localShow(val.Id, val.Name, val.Author, val.Year, val.Price)
 			return
@@ -146,23 +121,7 @@ func ChooseTitleBook() string {
 	}
 }
 
-func GetInt(num int) int {
-	var sliceBooks book.BookStore
-
-	file, err := os.OpenFile("cmd/app/allbooks.json", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-		return 0
-	}
-	defer file.Close()
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&sliceBooks)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при чтении из файла")
-		return 0
-	}
-
+func GetInt(someone string) int {
 	for {
 		ui := bufio.NewReader(os.Stdin)
 		str, err := ui.ReadString(NewLine)
@@ -180,6 +139,11 @@ func GetInt(num int) int {
 
 		if number < 1 {
 			fmt.Fprint(os.Stderr, "Число должно быть положительным\nПопробуйте еще раз: ")
+			continue
+		}
+
+		if someone == "year" && number > time.Now().Year() {
+			fmt.Fprint(os.Stderr, "Указанный вами год не совпадает с текущим\nПопробуйте еще раз: ")
 			continue
 		}
 

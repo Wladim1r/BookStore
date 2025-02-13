@@ -18,17 +18,23 @@ func main() {
 	fmt.Fprintln(os.Stdout, "5 - уйти")
 	fmt.Fprintln(os.Stdout)
 
+	filePath := "allBooks.json"
+	_, err := book.CreatFile(filePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка с файлом", err)
+	}
+
 	for {
 		numberOption := show.ChooseOption()
 
 		switch numberOption {
 		case 1:
-			show.ShowAll()
+			show.ShowAll(filePath)
 		case 2:
 			fmt.Fprintln(os.Stdout, "Укажите название той книги, которая вас интересует")
 			fmt.Fprintln(os.Stdout)
 			title := show.ChooseTitleBook()
-			show.ShowOne(title)
+			show.ShowOne(filePath, title)
 		case 3:
 			fmt.Fprintln(os.Stdout)
 			fmt.Fprintln(os.Stdout, "Этап добовления книги в общий список")
@@ -44,17 +50,17 @@ func main() {
 			fmt.Fprintln(os.Stdout)
 
 			fmt.Fprint(os.Stdout, "Введите год издания книги: ")
-			year := show.GetInt(numberOption)
+			year := show.GetInt("year")
 			fmt.Fprintln(os.Stdout, "Дата успешно сохранена!")
 			fmt.Fprintln(os.Stdout)
 
 			fmt.Fprint(os.Stdout, "Введите цену книги (в рублях): ")
-			price := show.GetInt(numberOption)
+			price := show.GetInt("price")
 			fmt.Fprintln(os.Stdout, "Цена успешно сохранена!")
 			fmt.Fprintln(os.Stdout)
 
 			newBook := book.NewBook(name, autor, year, price)
-			book.MyBooks.CreateBook(newBook)
+			book.MyBooks.CreateBook(filePath, newBook)
 
 			fmt.Fprintln(os.Stdout)
 		case 4:
@@ -62,7 +68,7 @@ func main() {
 			fmt.Fprintln(os.Stdout, "Этап удаления книги из списка")
 			fmt.Fprint(os.Stdout, "Введите название той книги, которую хотите удалить из списка: ")
 			title := show.GetString()
-			book.MyBooks.RemoveBook(title)
+			book.MyBooks.RemoveBook(filePath, title)
 		case 5:
 			return
 		}

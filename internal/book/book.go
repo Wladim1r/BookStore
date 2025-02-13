@@ -3,7 +3,6 @@ package book
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 )
 
@@ -29,20 +28,8 @@ type BookStore struct {
 	MaxId int    `json:"max_id"`
 }
 
-func (books *BookStore) CreateBook(book Book) {
-	file, err := os.OpenFile("cmd/app/allbooks.json", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-		return
-	}
-	defer file.Close()
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(books)
-	if err != nil && err != io.EOF {
-		fmt.Fprintln(os.Stderr, "Ошибка при чтении данных из файла")
-		return
-	}
+func (books *BookStore) CreateBook(fileName string, book Book) {
+	ReadJsonFile(fileName, books)
 
 	books.MaxId = 0
 
@@ -55,41 +42,25 @@ func (books *BookStore) CreateBook(book Book) {
 			books.MaxId = book.Id + 1
 		}
 	}
-
 	book.Id = books.MaxId
 
 	books.Books = append(books.Books, book)
 
-	file.Seek(0, 0)
-
-	if err := file.Truncate(0); err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при отчистке файла")
+	dataJson, err := json.Marshal(*books)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка при записи в JSON формат")
 		return
 	}
-
-	encoder := json.NewEncoder(file)
-	err = encoder.Encode(books)
+	err = os.WriteFile(fileName, dataJson, 0666)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Ошибка при записи данных в файл")
-		return
 	}
 
 	fmt.Fprintf(os.Stdout, "Книга успешно сохранена под номером %d и добавлена в общий список!\n", book.Id)
 }
 
-func (books *BookStore) RemoveBook(title string) {
-
-	file, err := os.OpenFile("cmd/app/allbooks.json", os.O_RDWR|os.O_CREATE, 0666)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-		return
-	}
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&books)
-	if err != nil && err != io.EOF {
-		fmt.Fprintln(os.Stderr, "Ошибка при чтении данных из файла")
-	}
+func (books *BookStore) RemoveBook(fileName string, title string) {
+	ReadJsonFile(fileName, books)
 
 	for i, val := range books.Books {
 		if val.Name == title {
@@ -99,14 +70,11 @@ func (books *BookStore) RemoveBook(title string) {
 				books.Books[i].Id = i + 1
 			}
 
-			file.Seek(0, 0)
-
-			if err := file.Truncate(0); err != nil {
-				fmt.Fprintln(os.Stderr, "Ошибка при очистке файла")
+			dataJson, err := json.Marshal(*books)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Ошибка при записи в JSON формат")
 			}
-
-			encoder := json.NewEncoder(file)
-			err = encoder.Encode(books)
+			err = os.WriteFile(fileName, dataJson, 0666)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Ошибка при записи данных в файл")
 			}
@@ -122,3 +90,42 @@ func (books *BookStore) RemoveBook(title string) {
 }
 
 var MyBooks = BookStore{}
+
+func CreatFile(filePath string) (*os.File, error) {
+	var file *os.File
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		file, err = os.Create(filePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Ошибка при создании файла")
+			return nil, err
+		}
+	} else {
+		file, err = os.OpenFile(filePath, os.O_RDWR, 0666)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
+			return nil, err
+		}
+	}
+	defer file.Close()
+
+	return file, nil
+}
+
+func ReadJsonFile(fileName string, bookStore *BookStore) {
+	dataJson, err := os.ReadFile(fileName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка при чтении файла")
+		return
+	}
+
+	if len(dataJson) == 0 {
+		return
+	}
+
+	err = json.Unmarshal(dataJson, bookStore)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка при чтении файла: %v\n", err)
+		return
+	}
+}
