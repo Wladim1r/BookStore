@@ -1,171 +1,81 @@
 package show
 
 import (
-	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"library/internal/book"
+	"library/internal/utils"
 	"os"
 	"sort"
-	"strconv"
-	"strings"
-	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
-const NewLine = '\n'
-
-func localShow(id int, name, autor string, year, price int) {
-	fmt.Fprintf(os.Stdout, "\nКНИГА №%d\n", id)
-	fmt.Fprintf(os.Stdout, "Название: %s\n", name)
-	fmt.Fprintf(os.Stdout, "Автор: %s\n", autor)
-	fmt.Fprintf(os.Stdout, "Год издания: %d\n", year)
-	fmt.Fprintf(os.Stdout, "Цена (в рублях): %d\n\n", price)
+func localShow(b book.Book) {
+	fmt.Fprintf(os.Stdout, "\nКНИГА №%d\n", b.Id)
+	fmt.Fprintf(os.Stdout, "Название: %s\n", b.Name)
+	fmt.Fprintf(os.Stdout, "Автор: %s\n", b.Author)
+	fmt.Fprintf(os.Stdout, "Год издания: %d\n", b.Year)
+	fmt.Fprintf(os.Stdout, "Цена (в рублях): %d\n\n", b.Price)
 }
 
-func ShowAll(fileName string) {
-	var bookStore book.BookStore
-	book.ReadJsonFile(fileName, &bookStore)
-	books := bookStore.Books
+func ShowAll(ctx context.Context, r *redis.Client) {
 
-	sort.Slice(books, func(i, j int) bool {
-		return books[i].Id < books[j].Id
+	ids, err := r.SMembers(ctx, "books:index").Result()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка получения индексов", err)
+		return
+	}
+
+	booksJSON, err := r.MGet(ctx, utils.IdToKey(ids)...).Result()
+	if err != nil {
+		fmt.Fprint(os.Stderr, "\nКниг нет\n\n")
+		return
+	}
+
+	var bookList []book.Book
+	for _, bookJSON := range booksJSON {
+		var b book.Book
+		if bookJSON == nil {
+			continue
+		}
+		if err := json.Unmarshal([]byte(bookJSON.(string)), &b); err != nil {
+			fmt.Fprintln(os.Stdout, "Ошибка декодирования книги", err)
+			continue
+		}
+		bookList = append(bookList, b)
+	}
+
+	sort.Slice(bookList, func(i, j int) bool {
+		return bookList[i].Id < bookList[j].Id
 	})
 
-	if len(books) == 0 {
-		fmt.Fprintf(os.Stdout, "\nКниг нет\n\n")
-	} else {
-		fmt.Fprintf(os.Stdout, "\nСПИСОК ВСЕХ КНИГ ИЗ СПИСКА\n")
-		for _, val := range books {
-			localShow(val.Id, val.Name, val.Author, val.Year, val.Price)
-		}
+	fmt.Fprintln(os.Stdout, "\nСПИСОК ВСЕХ КНИГ ИЗ БИБЛИОТЕКИ")
+	for _, b := range bookList {
+		localShow(b)
 	}
-}
-
-func ShowOne(fileName string, title string) {
-	var bookStore book.BookStore
-	book.ReadJsonFile(fileName, &bookStore)
-	books := bookStore.Books
-
-	for _, val := range books {
-		if val.Name == title {
-			localShow(val.Id, val.Name, val.Author, val.Year, val.Price)
-			return
-		}
-	}
-	fmt.Fprintln(os.Stderr, "Такой книги нет")
 	fmt.Fprintln(os.Stdout)
 }
 
-func ChooseOption() int {
-	var numberOption int
-
-	for {
-		fmt.Fprint(os.Stdout, "Поле для ввода действия над библиотекой: ")
-
-		ui := bufio.NewReader(os.Stdin)
-		str, err := ui.ReadString(NewLine)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка ввода\nПопробуйте еще раз")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-
-		str = strings.TrimSpace(str)
-
-		if len(str) == 0 {
-			fmt.Fprintln(os.Stderr, "Нельзя оставлять поле пустым")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-
-		numberOption, err = strconv.Atoi(str)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ввод не может содержать какие-либо символы, кроме цифр")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-
-		if numberOption > 5 {
-			fmt.Fprintln(os.Stderr, "Число слишком большое")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-		if numberOption < 1 {
-			fmt.Fprintln(os.Stderr, "Число слишком маленькое")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-		break
+func ShowOne(ctx context.Context, r *redis.Client, title string) {
+	id, err := r.Get(ctx, "book:title:"+title).Result()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка получения ID книги\n%v\n\n", err)
+		return
 	}
-	return numberOption
-}
 
-func ChooseTitleBook() string {
-	for {
-		fmt.Fprint(os.Stdout, "Поле для ввода названия книги: ")
-
-		ui := bufio.NewReader(os.Stdin)
-		str, err := ui.ReadString(NewLine)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка ввода\nПопробуйте еще раз")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-		str = strings.TrimSpace(str)
-
-		if len(str) == 0 {
-			fmt.Fprintln(os.Stderr, "Ввод не должен быть пустым")
-			fmt.Fprintln(os.Stdout)
-			continue
-		}
-		return str
+	bookJSON, err := r.Get(ctx, "book:id:"+id).Result()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка получения книги\n%v\n\n", err)
+		return
 	}
-}
 
-func GetInt(someone string) int {
-	for {
-		ui := bufio.NewReader(os.Stdin)
-		str, err := ui.ReadString(NewLine)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка ввода\nПопробуйте еще раз")
-			continue
-		}
-		str = strings.TrimSpace(str)
-
-		number, err := strconv.Atoi(str)
-		if err != nil {
-			fmt.Fprint(os.Stdout, "Ошибка ввода\nПопробуйте еще раз: ")
-			continue
-		}
-
-		if number < 1 {
-			fmt.Fprint(os.Stderr, "Число должно быть положительным\nПопробуйте еще раз: ")
-			continue
-		}
-
-		if someone == "year" && number > time.Now().Year() {
-			fmt.Fprint(os.Stderr, "Указанный вами год не совпадает с текущим\nПопробуйте еще раз: ")
-			continue
-		}
-
-		return number
+	var book book.Book
+	if err := json.Unmarshal([]byte(bookJSON), &book); err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка десериализации книги\n%v\n\n", err)
+		return
 	}
-}
 
-func GetString() string {
-	for {
-		ui := bufio.NewReader(os.Stdin)
-		str, err := ui.ReadString(NewLine)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка ввода")
-			continue
-		}
-		str = strings.TrimSpace(str)
-
-		if len(str) == 0 {
-			fmt.Fprint(os.Stderr, "Поле не может оставаться пустым\nПопробуйте еще раз: ")
-			continue
-		}
-
-		return str
-	}
+	localShow(book)
 }
