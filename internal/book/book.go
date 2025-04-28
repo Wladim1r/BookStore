@@ -1,13 +1,18 @@
 package book
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"library/internal/utils"
 	"os"
+	"strconv"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type Book struct {
-	Id     int    `json:"id"`
+	Id     int64  `json:"id"`
 	Name   string `json:"name"`
 	Author string `json:"author"`
 	Year   int    `json:"year"`
@@ -23,109 +28,168 @@ func NewBook(name, author string, year, price int) Book {
 	}
 }
 
-type BookStore struct {
-	Books []Book `json:"books"`
-	MaxId int    `json:"max_id"`
-}
-
-func (books *BookStore) CreateBook(fileName string, book Book) {
-	ReadJsonFile(fileName, books)
-
-	books.MaxId = 0
-
-	if len(books.Books) == 0 {
-		books.MaxId = 1
-	}
-
-	for _, book := range books.Books {
-		if book.Id >= books.MaxId {
-			books.MaxId = book.Id + 1
-		}
-	}
-	book.Id = books.MaxId
-
-	books.Books = append(books.Books, book)
-
-	dataJson, err := json.Marshal(*books)
+func CreateBook(ctx context.Context, r *redis.Client, book Book) {
+	id, err := r.Incr(ctx, "books:last_id").Result()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при записи в JSON формат")
+		fmt.Fprintln(os.Stderr, "Ошибка инкрементации ID", err)
+	}
+	book.Id = id
+
+	bookJSON, err := json.Marshal(book)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка сериализации книги", err)
 		return
 	}
-	err = os.WriteFile(fileName, dataJson, 0666)
+
+	// транзакция добавления книги и ее индекса
+	_, err = r.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "book:id:"+strconv.Itoa(int(book.Id)), bookJSON, 0)
+		p.Set(ctx, "book:title:"+book.Name, book.Id, 0)
+
+		p.SAdd(ctx, "books:index", book.Id)
+
+		return nil
+	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при записи данных в файл")
+		fmt.Fprintln(os.Stderr, "Ошибка создания книги", err)
+		return
 	}
 
 	fmt.Fprintf(os.Stdout, "Книга успешно сохранена под номером %d и добавлена в общий список!\n", book.Id)
 }
 
-func (books *BookStore) RemoveBook(fileName string, title string) {
-	ReadJsonFile(fileName, books)
-
-	for i, val := range books.Books {
-		if val.Name == title {
-			books.Books = append(books.Books[:i], books.Books[i+1:]...)
-
-			for i := 0; i < len(books.Books); i++ {
-				books.Books[i].Id = i + 1
-			}
-
-			dataJson, err := json.Marshal(*books)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Ошибка при записи в JSON формат")
-			}
-			err = os.WriteFile(fileName, dataJson, 0666)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Ошибка при записи данных в файл")
-			}
-
-			fmt.Fprintf(os.Stdout, "Книга \"%s\" успешно удалена из списка!\n", val.Name)
-			fmt.Fprintln(os.Stdout)
-
-			return
-		}
+func RemoveBook(ctx context.Context, r *redis.Client, title string) {
+	id, err := r.Get(ctx, "book:title:"+title).Result()
+	if err == redis.Nil {
+		fmt.Fprintln(os.Stderr, "Книга не найдена", err)
+		return
+	} else if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
-	fmt.Fprintln(os.Stdout, "Книга по данному названию не найдена")
-	fmt.Fprintln(os.Stdout)
+
+	_, err = r.Get(ctx, "book:id:"+id).Result()
+	if err == redis.Nil {
+		fmt.Fprintln(os.Stderr, "Книга не найдена", err)
+		return
+	} else if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+
+	_, err = r.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.Del(ctx, "book:title:"+title)
+		p.Del(ctx, "book:id:"+id)
+
+		p.SRem(ctx, "books:index", id)
+
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка удаления книги", err)
+		return
+	}
+
+	fmt.Fprintf(os.Stdout, "Книга успешно удалена\n\n")
 }
 
-var MyBooks = BookStore{}
+func UpdateBook(ctx context.Context, r *redis.Client, title string, num int) {
+	id, err := r.Get(ctx, "book:title:"+title).Result()
+	if err == redis.Nil {
+		fmt.Fprintf(os.Stderr, "Книга не найдена\n%v\n\n", err)
+		return
+	} else if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
 
-func CreatFile(filePath string) (*os.File, error) {
-	var file *os.File
+	bookJSON, err := r.Get(ctx, "book:id:"+id).Result()
+	if err == redis.Nil {
+		fmt.Fprintln(os.Stderr, "Книга не найдена", err)
+		return
+	} else if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
 
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		file, err = os.Create(filePath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка при создании файла")
-			return nil, err
+	var book Book
+	if err := json.Unmarshal([]byte(bookJSON), &book); err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка десериализации книги", err)
+		return
+	}
+
+	newBook := FillInFields(num)
+
+	newBook.Id = book.Id
+	if newBook.Name == "-" {
+		newBook.Name = book.Name
+	}
+	if newBook.Author == "-" {
+		newBook.Author = book.Author
+	}
+	if newBook.Year == 0 {
+		newBook.Year = book.Year
+	}
+	if newBook.Price == 0 {
+		newBook.Price = book.Price
+	}
+
+	newBookJSON, err := json.Marshal(newBook)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка сериализации книги", err)
+		return
+	}
+
+	_, err = r.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "book:id:"+id, newBookJSON, 0)
+
+		if book.Name != newBook.Name {
+			p.Del(ctx, "book:title:"+book.Name)
+			p.Set(ctx, "book:title:"+newBook.Name, book.Id, 0)
 		}
+
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка изменения книги", err)
+		return
+	}
+
+	fmt.Fprintln(os.Stdout, "Книга успешно обновлена")
+}
+
+func FillInFields(num int) Book {
+	fmt.Fprint(os.Stdout, "Введите название книги: ")
+	name := utils.GetString(num)
+	if name == "-" {
+		fmt.Fprintf(os.Stdout, "Название осталось прежним!\n\n")
 	} else {
-		file, err = os.OpenFile(filePath, os.O_RDWR, 0666)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Ошибка при открытии файла")
-			return nil, err
-		}
-	}
-	defer file.Close()
-
-	return file, nil
-}
-
-func ReadJsonFile(fileName string, bookStore *BookStore) {
-	dataJson, err := os.ReadFile(fileName)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка при чтении файла")
-		return
+		fmt.Fprintf(os.Stdout, "Название успешно сохранено!\n\n")
 	}
 
-	if len(dataJson) == 0 {
-		return
+	fmt.Fprint(os.Stdout, "Введите имя автора книги: ")
+	author := utils.GetString(num)
+	if author == "-" {
+		fmt.Fprintf(os.Stdout, "Автор остался прежним!\n\n")
+	} else {
+		fmt.Fprintf(os.Stdout, "Автор книги успешно сохранен!\n\n")
 	}
 
-	err = json.Unmarshal(dataJson, bookStore)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка при чтении файла: %v\n", err)
-		return
+	fmt.Fprint(os.Stdout, "Введите год издания книги: ")
+	year := utils.GetInt(num, "year")
+	if year == 0 {
+		fmt.Fprintf(os.Stdout, "Год издания остался прежним!\n\n")
+	} else {
+		fmt.Fprintf(os.Stdout, "Дата успешно сохранена!\n\n")
 	}
+
+	fmt.Fprint(os.Stdout, "Введите цену книги (в рублях): ")
+	price := utils.GetInt(num, "price")
+	if price == 0 {
+		fmt.Fprintf(os.Stdout, "Цена осталась прежней!\n\n")
+	} else {
+		fmt.Fprintf(os.Stdout, "Цена успешно сохранена!\n\n")
+	}
+
+	return NewBook(name, author, year, price)
 }
